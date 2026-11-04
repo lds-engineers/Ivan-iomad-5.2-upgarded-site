@@ -1,0 +1,125 @@
+<?php
+// This file is part of Moodle - http://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+
+/**
+ * IOMAD eCommerce block buy now page
+ *
+ * @package   block_iomad_commerce
+ * @copyright 2021 Derick Turner
+ * @author    Derick Turner
+ * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
+use block_iomad_commerce\helper;
+
+require_once(dirname(__FILE__) . '/../../config.php');
+require_once(dirname(__FILE__) . '/../iomad_company_admin/lib.php');
+
+helper::require_commerce_enabled();
+
+$itemid = required_param('itemid', PARAM_INT);
+$nlicenses = optional_param('nlicenses', 0, PARAM_INT);
+$licenses = optional_param('licenses', 0, PARAM_INT);
+
+// May be viewed by the guest account.
+require_course_login($SITE);
+
+if ($licenses && !$nlicenses) {
+    redirect(new moodle_url($CFG->wwwroot . '/blocks/iomad_commerce/item.php',
+                            ['licenseformempty' => 1, 'id' => $itemid]));
+}
+
+$PAGE->set_url(new moodle_url($CFG->wwwroot . "/blocks/iomad_commerce/buynow.php",
+                              ['itemid' => $itemid,
+                               'nlicenses' => $nlicenses]));
+$PAGE->set_context(context_system::instance());
+$context = $PAGE->context;
+
+// Get or create basket.
+if (!empty($SESSION->basketid)) {
+    if (!$basket = $DB->get_record('block_iomad_commerce_invoices',
+                                   ['id' => $SESSION->basketid,
+                                    'status' => helper::INVOICESTATUS_BASKET])) {
+        $basket = (object) [];
+        $basket->userid = $USER->id;
+        $basket->status = helper::INVOICESTATUS_BASKET;
+        $basket->date = time();
+        $basket->id = $DB->insert_record('block_iomad_commerce_invoices', $basket, true);
+        $SESSION->basketid = $basket->id;
+    }
+} else {
+    $basket = (object) [];
+    $basket->userid = $USER->id;
+    $basket->status = helper::INVOICESTATUS_BASKET;
+    $basket->date = time();
+    $basket->id = $DB->insert_record('block_iomad_commerce_invoices', $basket, true);
+    $SESSION->basketid = $basket->id;
+}
+
+// Set up the invoice item.
+$invoiceitem = (object) [];
+$invoiceitem->invoiceid = $basket->id;
+$invoiceitem->invoiceableitemid = $itemid;
+
+// Do we have license blocks?
+if ($nlicenses) {
+    if ($block = helper::get_license_block($itemid, $nlicenses)) {
+        $invoiceitem->currency = $block->currency;
+        $invoiceitem->price = $block->price;
+        $invoiceitem->invoiceableitemtype = 'licenseblock';
+
+        $invoiceitem->license_allocation = $nlicenses;
+        $invoiceitem->license_validlength = $block->validlength;
+        $invoiceitem->license_shelflife = $block->shelflife;
+    } else {
+        redirect(new moodle_url($CFG->wwwroot . '/blocks/iomad_commerce/item.php',
+                                ['itemid' => $itemid,
+                                 'invalidamount' => 'true']));
+    }
+} else {
+
+    // Single purchase.
+    if ($product = $DB->get_record('block_iomad_commerce_products', ['id' => $itemid], '*', MUST_EXIST)) {
+        // Do we have a single purchase price set?
+        if ($product->allow_single_purchase) {
+            $invoiceitem->currency = $product->single_purchase_currency;
+            $invoiceitem->price = $product->single_purchase_price;
+            $invoiceitem->invoiceableitemtype = 'singlepurchase';
+            $invoiceitem->license_validlength = $product->single_purchase_validlength;
+            $invoiceitem->license_shelflife = 0;
+        } else {
+            // Need to use the block price for 1 item.
+            if ($block = helper::get_license_block($itemid, 1)) {
+                $invoiceitem->currency = $block->currency;
+                $invoiceitem->price = $block->price;
+                $invoiceitem->invoiceableitemtype = 'licenseblock';
+                $invoiceitem->license_validlength = $block->validlength;
+                $invoiceitem->license_shelflife = $block->shelflife;
+            } else {
+                redirect(new moodle_url($CFG->wwwroot . '/blocks/iomad_commerce/item.php',
+                                        ['itemid' => $itemid,
+                                        'invalidamount' => 'true']));
+            }
+        }
+        $invoiceitem->license_allocation = 1;
+    }
+}
+
+// Add the new invoice item.
+$DB->insert_record('block_iomad_commerce_invoice_items', $invoiceitem);
+
+// Redirect to the user's basket.
+redirect(new moodle_url($CFG->wwwroot . '/blocks/iomad_commerce/basket.php'));

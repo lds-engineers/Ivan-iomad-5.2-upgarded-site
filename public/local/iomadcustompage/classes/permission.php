@@ -1,0 +1,186 @@
+<?php
+// This file is part of Moodle - http://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+
+declare(strict_types=1);
+
+namespace local_iomadcustompage;
+
+use core\context;
+use core\context\system;
+use local_iomad\iomad;
+use local_iomad\custom_context\context_company;
+use local_iomadcustompage\local\helpers\audience;
+use local_iomadcustompage\local\models\page;
+
+/**
+ * Page permission class.
+ *
+ * This class handles all permission checks for custom pages.
+ *
+ * @package    local_iomadcustompage
+ * @copyright  2021 Paul Holden <paulh@moodle.com>
+ * @copyright  2024 BitAscii Solutions <bitascii.dev@gmail.com>
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+class permission {
+    /**
+     * Require given user can view pages list
+     *
+     * @param int|null $userid User ID to check, or the current user if omitted
+     * @param context|null $context
+     * @throws page_access_exception
+     */
+    public static function require_can_view_pages_list(?int $userid = null, ?\core\context $context = null): void {
+        if (!static::can_view_pages_list($userid, $context)) {
+            throw new page_access_exception();
+        }
+    }
+
+    /**
+     * Whether given user can view pages list
+     *
+     * @param int|null $userid User ID to check, or the current user if omitted
+     * @param context|null $context
+     * @return bool
+     */
+    public static function can_view_pages_list(?int $userid = null, ?\core\context $context = null): bool {
+        if ($context === null) {
+            $context = \core\context\system::instance();
+
+            // IOMAD!
+            $companyid = iomad::get_my_companyid($context);
+            if ($companyid > 0) {
+                $context = context_company::instance($companyid);
+            }
+        }
+
+        return has_any_capability([
+            'local/iomadcustompage:editall',
+            'local/iomadcustompage:edit',
+            'local/iomadcustompage:view',
+        ], $context, $userid);
+    }
+
+    /**
+     * Require given user can view page
+     *
+     * @param page $page
+     * @param int|null $userid User ID to check, or the current user if omitted
+     * @throws page_access_exception
+     */
+    public static function require_can_view_page(page $page, ?int $userid = null): void {
+        if (!static::can_view_page($page, $userid)) {
+            throw new page_access_exception('errorpageview');
+        }
+    }
+
+    /**
+     * Whether given user can view page
+     *
+     * @param page $page
+     * @param int|null $userid User ID to check, or the current user if omitted
+     * @return bool
+     */
+    public static function can_view_page(page $page, ?int $userid = null): bool {
+        if (static::can_view_pages_list($userid, $page->get_context())) {
+            return true;
+        }
+
+        if (self::can_edit_page($page, $userid)) {
+            return true;
+        }
+
+        $pages = audience::user_pages_list($userid);
+        if (in_array($page->get('id'), $pages)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Require given user can edit page
+     *
+     * @param page $page
+     * @param int|null $userid User ID to check, or the current user if omitted
+     * @throws page_access_exception
+     */
+    public static function require_can_edit_page(page $page, ?int $userid = null): void {
+        if (!static::can_edit_page($page, $userid)) {
+            throw new page_access_exception('errorpageedit');
+        }
+    }
+
+    /**
+     * Whether given user can edit page
+     *
+     * @param page $page The page to check edit permissions for
+     * @param int|null $userid User ID to check, or the current user if omitted
+     * @return bool True if the user can edit the page
+     */
+    public static function can_edit_page(page $page, ?int $userid = null): bool {
+        global $USER;
+
+        // To edit their own pages, users must have either of the 'edit' or 'editall' capabilities.
+        // For pages belonging to other users, they must have the specific 'editall' capability.
+        $userid = $userid ?: (int) $USER->id;
+
+        // IOMAD!
+        $context = $page->get_context();
+        $companyid = iomad::get_my_companyid($context);
+        if ($companyid > 0) {
+            $context = context_company::instance($companyid);
+        }
+
+        if ($page->get('usercreated') === $userid) {
+            return has_any_capability([
+                'local/iomadcustompage:edit',
+                'local/iomadcustompage:editall',
+            ], $context, $userid);
+        } else {
+            return has_capability('local/iomadcustompage:editall', $context, $userid);
+        }
+    }
+
+    /**
+     * Whether given user can create a new page
+     *
+     * @param int|null $userid User ID to check, or the current user if omitted
+     * @param context|null $context
+     * @return bool
+     */
+    public static function can_create_page(?int $userid = null, ?\core\context $context = null): bool {
+        if ($context === null) {
+            $context = \core\context\system::instance();
+        }
+
+        // Prefer capability.
+        return has_capability('local/iomadcustompage:create', $context, $userid);
+    }
+
+    /**
+     * Require given user can create a new page
+     *
+     * @param int|null $userid User ID to check, or the current user if omitted
+     * @param context|null $context
+     * @throws page_access_exception
+     */
+    public static function require_can_create_page(?int $userid = null, ?\core\context $context = null): void {
+        if (!static::can_create_page($userid, $context)) {
+            throw new page_access_exception('errorpagecreate');
+        }
+    }
+}
